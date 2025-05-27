@@ -17,6 +17,7 @@ try:
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
     from selenium.webdriver.chrome.options import Options
+    # Service class is recommended for ChromeDriver
     from selenium.webdriver.chrome.service import Service as ChromeService
     # from webdriver_manager.chrome import ChromeDriverManager # Consider using this for easier driver management
     # For Opera GX or other browsers, you might need their specific Service objects
@@ -42,8 +43,7 @@ from typing import List, Dict, Optional, Tuple, Any
 from pathlib import Path
 import random
 from contextlib import contextmanager
-import subprocess 
-# For opening folders
+import subprocess # For opening folders
 
 # GUI Imports
 import tkinter as tk
@@ -66,7 +66,6 @@ DEFAULT_INPUT_FILE = "linkedin_links.txt"
 DEFAULT_OUTPUT_DIR = "results"
 RATE_LIMIT_COOLDOWN_MINUTES = 5
 DEFAULT_ACCOUNT_SWITCH_THRESHOLD = 50 # Default links to check before switching accounts
-
 
 # --- Logger Setup ---
 class QueueHandler(logging.Handler):
@@ -117,9 +116,9 @@ def check_prerequisites():
     missing_libs = []
     try:
         import customtkinter
-        logger.info("✔ customtkinter is installed") # Improved: Using actual checkmark
+        logger.info("✔ customtkinter is installed")
     except ImportError:
-        logger.error("❌ customtkinter is not installed. Please run: pip install customtkinter") # Improved: Using actual X
+        logger.error("❌ customtkinter is not installed. Please run: pip install customtkinter")
         missing_libs.append("customtkinter")
         requirements_met = False
     if not PIL_AVAILABLE:
@@ -162,11 +161,10 @@ class LinkResult:
 # --- Core Checker Class ---
 class EnhancedLinkedInChecker:
     """Handles the core logic of checking LinkedIn links."""
-    # Improved: Integrated account switching and refined link processing logic.
     def __init__(self, input_file: str, output_dir: str,
                  delay_min: float, delay_max: float,
                  headless: bool, max_retries: int,
-                 account_switch_threshold: int, # New: Threshold for switching accounts
+                 account_switch_threshold: int,
                  gui_instance: Optional['LinkedInCheckerGUI'] = None,
                  browser_type: str = "Chrome"):
         self.input_file = Path(input_file)
@@ -177,9 +175,8 @@ class EnhancedLinkedInChecker:
         self.max_retries = max_retries
         self.gui = gui_instance
         self.browser_type = browser_type.lower()
-        self.account_switch_threshold = account_switch_threshold # New: Store threshold
+        self.account_switch_threshold = account_switch_threshold
 
-        # Account management attributes
         self.accounts: List[Dict[str, str]] = []
         self.current_account_index: int = 0
         self.links_checked_on_current_account: int = 0
@@ -196,22 +193,19 @@ class EnhancedLinkedInChecker:
             'total_processed': 0, 'working_found': 0, 'failed_or_invalid': 0,
             'rate_limit_suspected': 0
         }
-        self.driver: Optional[webdriver.Chrome] = None # Or other browser type
+        self.driver: Optional[webdriver.Chrome] = None
 
         self.rate_limit_cooldown_until: Optional[datetime] = None
         self.consecutive_error_count = 0
         self.MAX_CONSECUTIVE_ERRORS_BEFORE_COOLDOWN = 5
-
         logger.info(f"EnhancedLinkedInChecker initialized for file: {self.input_file}")
 
     def set_credentials(self, email: str, password: str) -> bool:
-        # Improved: Sets primary credentials and ensures it's the first in the account list.
         if not email or not password:
             logger.error("Primary email or password cannot be empty.")
             return False
         self._primary_email = email
         self._primary_password = password
-        # Remove any existing account with the same email before adding/prepending
         self.accounts = [acc for acc in self.accounts if acc['email'] != email]
         self.accounts.insert(0, {'email': email, 'password': password})
         self.current_account_index = 0
@@ -219,7 +213,6 @@ class EnhancedLinkedInChecker:
         return True
 
     def add_additional_account(self, email: str, password: str):
-        # Improved: Adds more accounts for rotation, avoiding duplicates of primary.
         if not email or not password:
             logger.error("Additional account email or password cannot be empty.")
             return
@@ -236,12 +229,24 @@ class EnhancedLinkedInChecker:
         if not self.accounts:
             logger.error("No accounts configured.")
             return None, None
-        # Return current account credentials
-        return self.accounts[self.current_account_index]['email'], self.accounts[self.current_account_index]['password']
+        if 0 <= self.current_account_index < len(self.accounts):
+            acc = self.accounts[self.current_account_index]
+            return acc['email'], acc['password']
+        logger.error(f"Current account index {self.current_account_index} out of bounds for {len(self.accounts)} accounts.")
+        if self._primary_email and self._primary_password: # Fallback to primary if index somehow gets corrupted
+            logger.warning("Resetting to primary account due to invalid index.")
+            self.current_account_index = 0
+            if self.accounts and self.accounts[0]['email'] == self._primary_email:
+                 return self.accounts[0]['email'], self.accounts[0]['password']
+        return None, None
 
-    # The rest of the code for WebDriver setup should be in a separate method, not in _get_current_creds.
-    # If you need to setup the driver, call a dedicated method like _setup_driver().
-
+    def _setup_driver(self) -> Optional[webdriver.Chrome]:
+        if not SELENIUM_AVAILABLE:
+            logger.error("Selenium is not available. Cannot setup WebDriver.")
+            if self.gui: self.gui.show_error_async("Selenium library is not installed. Web checking is disabled.")
+            return None
+        logger.info(f"Setting up {self.browser_type} WebDriver...")
+        try:
             options: Options
             if self.browser_type == "chrome":
                 options = Options()
@@ -257,16 +262,12 @@ class EnhancedLinkedInChecker:
                     logger.error(f"Failed to start ChromeDriver. Ensure it's in PATH or use webdriver-manager. Error: {e}")
                     if self.gui: self.gui.show_error_async(f"Failed to start ChromeDriver: {e}. Check logs.")
                     return None
-            elif self.browser_type == "opera gx": # Basic Opera GX setup
-                options = webdriver.ChromeOptions() # Opera often uses Chromium options
+            elif self.browser_type == "opera gx":
+                options = webdriver.ChromeOptions()
                 if self.headless: options.add_argument('headless')
-                # User needs to ensure Opera GX binary path is correctly set if not default
-                # And operadriver is in PATH or specified
-                # Example: options.binary_location = r"C:\Users\YourUser\AppData\Local\Programs\Opera GX\launcher.exe"
-                logger.warning("Opera GX setup assumes operadriver is in PATH and Opera GX is installed in a standard location or binary_location is set in code.")
+                logger.warning("Opera GX setup assumes operadriver is in PATH and Opera GX is installed correctly.")
                 try:
-                    # Example: service = webdriver.chrome.service.Service(executable_path=r"path\to\operadriver.exe")
-                    self.driver = webdriver.Opera(options=options) # Assumes operadriver in PATH
+                    self.driver = webdriver.Opera(options=options)
                 except WebDriverException as e:
                     logger.error(f"Failed to start OperaDriver. Error: {e}")
                     if self.gui: self.gui.show_error_async(f"Failed to start OperaDriver: {e}. Check logs.")
@@ -286,8 +287,34 @@ class EnhancedLinkedInChecker:
             if self.gui: self.gui.show_error_async(f"Error setting up WebDriver: {e}")
             return None
 
+    def _switch_to_next_account(self) -> bool:
+        if len(self.accounts) <= 1:
+            logger.info("Only one account configured, no switch possible.")
+            return True
+
+        self.current_account_index = (self.current_account_index + 1) % len(self.accounts)
+        new_email, _ = self._get_current_creds()
+
+        if not new_email:
+            logger.error("Failed to get credentials for the next account during switch.")
+            return False
+
+        logger.info(f"Attempting to switch to account: {new_email} (Index: {self.current_account_index})")
+        self.links_checked_on_current_account = 0
+        self._quit_driver()
+
+        if not self._setup_driver():
+            logger.error(f"Failed to set up WebDriver for account {new_email}.")
+            return False
+        if not self._login_linkedin():
+            logger.error(f"LinkedIn login failed for account {new_email} after switch.")
+            if self.gui:
+                 self.gui.show_error_async(f"Login failed for account {new_email} after switching. Check credentials/security challenges.")
+            return False
+        logger.info(f"Successfully switched and logged in with account: {new_email}")
+        return True
+
     def _login_linkedin(self) -> bool:
-        # Improved: Login uses current account from the list.
         current_email, current_password = self._get_current_creds()
         if not self.driver or not current_email or not current_password:
             logger.error("Driver not initialized or current account credentials not available for login.")
@@ -309,7 +336,7 @@ class EnhancedLinkedInChecker:
                     EC.url_contains("login_verify"), EC.url_contains("login-submit"),
                     EC.presence_of_element_located((By.ID, "error-for-password")),
                     EC.presence_of_element_located((By.ID, "error-for-username")),
-                    EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'too many attempts') or contains(text(),'Too many attempts')]"))
+                    EC.presence_of_element_located((By.XPATH, "//*[contains(text(),'too many attempts') or contains(text(),'Too many attempts')]")) # Case insensitive
                 )
             )
             current_url = self.driver.current_url
@@ -321,11 +348,7 @@ class EnhancedLinkedInChecker:
             elif "checkpoint/challenge" in current_url or "login_verify" in current_url:
                 logger.warning(f"LinkedIn security challenge detected for {current_email}.")
                 if self.gui and not self.headless:
-                    # Important: Call GUI dialogs that block until user interaction is done.
-                    # This needs to be handled carefully with threading.
-                    # For simplicity, a modal dialog is better.
-                    self.gui.show_security_challenge_dialog_modal(self.driver) # Assuming this method handles the wait
-                    # Re-check URL after user interaction (dialog closes)
+                    self.gui.show_security_challenge_dialog_modal(self.driver)
                     if "feed" in self.driver.current_url:
                         logger.info(f"Login successful for {current_email} after security challenge resolved.")
                         return True
@@ -335,15 +358,13 @@ class EnhancedLinkedInChecker:
                  logger.error(f"Login failed for {current_email}: Too many attempts or account restricted.")
                  self.consecutive_error_count += self.MAX_CONSECUTIVE_ERRORS_BEFORE_COOLDOWN
                  return False
-            else: # Check for specific login error messages
+            else:
                 error_msg = "Login failed. Unknown reason."
                 try:
-                    if self.driver.find_element(By.ID, "error-for-password").is_displayed():
-                        error_msg = "Incorrect password."
+                    if self.driver.find_element(By.ID, "error-for-password").is_displayed(): error_msg = "Incorrect password."
                 except NoSuchElementException: pass
                 try:
-                    if self.driver.find_element(By.ID, "error-for-username").is_displayed():
-                        error_msg = "Incorrect username."
+                    if self.driver.find_element(By.ID, "error-for-username").is_displayed(): error_msg = "Incorrect username."
                 except NoSuchElementException: pass
                 logger.error(f"Login failed for {current_email}: {error_msg} Current URL: {current_url}")
                 return False
@@ -372,27 +393,29 @@ class EnhancedLinkedInChecker:
                     elif stripped_line: logger.warning(f"No URL found in line {original_line_num}: '{stripped_line}'")
             logger.info(f"Read {len(self.links_to_process)} URLs from {self.input_file}")
             if self.gui and hasattr(self.gui, 'set_progress_max_value'):
-                self.gui.set_progress_max_value(len(self.links_to_process))
+                self.gui.set_progress_max_value(len(self.links_to_process)) # Call GUI method to update progress bar max
             return self.links_to_process
         except Exception as e:
             logger.error(f"Error reading links file: {e}", exc_info=True)
             if self.gui: self.gui.show_error_async(f"Error reading links file: {e}")
             return []
 
+    # --- PATCHED process_single_link ---
     def process_single_link(self, extracted_url: str, original_line_num: int, original_line_content: str) -> LinkResult:
-        # Improved: More robust text analysis for offer status, integrated from previous logic.
         current_email, _ = self._get_current_creds()
         logger.info(f"Processing L#{original_line_num}: {extracted_url} (Account: {current_email or 'N/A'})")
         result_args = {"link": extracted_url, "original_url_from_file": original_line_content, "line_num": original_line_num}
 
-        if self.should_stop: return LinkResult(**result_args, status="CANCELLED", result_details="Process cancelled by user")
-        if not self.driver: return LinkResult(**result_args, status="ERROR", result_details="WebDriver not available")
+        if self.should_stop:
+            return LinkResult(**result_args, status="CANCELLED", result_details="Process cancelled by user")
+        if not self.driver:
+            return LinkResult(**result_args, status="ERROR", result_details="WebDriver not available")
 
         time.sleep(random.uniform(self.delay_min, self.delay_max))
         try:
             logger.debug(f"Navigating to: {extracted_url}")
             self.driver.get(extracted_url)
-            time.sleep(random.uniform(3.0, 5.5)) # Allow page to load, consider WebDriverWait for specific elements
+            time.sleep(random.uniform(3.0, 5.5)) # Increased sleep for page load
 
             current_url = self.driver.current_url
             page_title = self.driver.title.lower() if self.driver.title else ""
@@ -403,26 +426,34 @@ class EnhancedLinkedInChecker:
             rate_limit_keywords = ["security verification", "are you a human", "too many requests", "temporarily restricted", "checkpoint", "verify your identity", "unusual activity"]
             if any(kw in page_title for kw in rate_limit_keywords) or any(kw in page_source_lower for kw in rate_limit_keywords):
                 logger.warning(f"Rate limit/security check for {extracted_url} (Title: {page_title})")
-                self.consecutive_error_count += 1; self.stats['rate_limit_suspected'] +=1
+                self.consecutive_error_count += 1
+                self.stats['rate_limit_suspected'] +=1
                 return LinkResult(**result_args, status="RATE_LIMIT_SUSPECTED", result_details=f"Security/Rate limit page (Title: {page_title})")
 
             if "authwall" in current_url or "login." in current_url or "/login" in current_url:
-                 logger.warning(f"Authwall/Login page for {extracted_url}.")
-                 self.consecutive_error_count +=1
-                 return LinkResult(**result_args, status="FAILED", result_details="Authwall/Login required or session issue.")
+                logger.warning(f"Authwall/Login page for {extracted_url}.")
+                self.consecutive_error_count +=1
+                return LinkResult(**result_args, status="FAILED", result_details="Authwall/Login required or session issue.")
 
+            # --- PATCH START: Prioritize checking for unavailable offer keywords FIRST ---
             offer_unavailable_keywords = [
                 "offer is no longer available", "this offer has expired", "sorry, this offer isn't available",
                 "unable to claim this offer", "this link is no longer active", "link has expired",
                 "this gift is no longer available", "this trial is no longer available",
                 "you may have already redeemed this gift", "offer already redeemed", "no longer valid",
-                "not available at this time", "cannot be claimed"
+                "not available at this time", "cannot be claimed", "already been redeemed" # Added "already been redeemed" for flexibility
             ]
-            if any(kw in page_source_lower for kw in offer_unavailable_keywords):
-                logger.info(f"Offer unavailable/expired (text match) for {extracted_url}")
-                self.consecutive_error_count = 0
-                return LinkResult(**result_args, status="FAILED", result_details="Offer unavailable, expired, or already redeemed.")
+            # Normalize apostrophes for robust matching
+            normalized_page_source = page_source_lower.replace("’", "'").replace("‘", "'")
+            normalized_offer_unavailable_keywords = [kw.replace("’", "'").replace("‘", "'") for kw in offer_unavailable_keywords]
 
+            if any(kw in normalized_page_source for kw in normalized_offer_unavailable_keywords):
+                logger.info(f"Offer unavailable/expired (text match) for {extracted_url}")
+                self.consecutive_error_count = 0 # Reset error count as this is a definitive link status
+                return LinkResult(**result_args, status="FAILED", result_details="Offer unavailable, expired, or already redeemed.")
+            # --- PATCH END ---
+
+            # Proceed with gift/trial detection only if not unavailable
             gift_redeem_url_patterns = ["/redeem", "/gifts/claim", "/sales/gift/claim", "/premium/redeem", "linkedin.com/checkout/redeem", "linkedin.com/checkout/gift"]
             gift_redeem_query_params = ["redeemToken", "claimToken", "midToken", "msgPayload", "giftId", "trk=li_gift"]
             trial_keywords_on_page = [
@@ -432,10 +463,11 @@ class EnhancedLinkedInChecker:
                 "start free trial", "confirm your free trial", "free premium"
             ]
             is_gift_redeem_url = any(patt in current_url.lower() for patt in gift_redeem_url_patterns)
-            has_gift_redeem_param = any(qp in current_url for qp in gift_redeem_query_params)
+            has_gift_redeem_param = any(qp in current_url for qp in gift_redeem_query_params) # Query params can be case-sensitive
             found_trial_keyword = any(kw in page_source_lower for kw in trial_keywords_on_page)
 
-            confidence = "LOW"; details_for_working = "Potential trial/gift indicators found."
+            confidence = "LOW"
+            details_for_working = "Potential trial/gift indicators found."
             if is_gift_redeem_url and has_gift_redeem_param: confidence = "HIGH"
             elif is_gift_redeem_url or has_gift_redeem_param: confidence = "MEDIUM"
             elif found_trial_keyword and ("premium" in current_url.lower() or "checkout" in current_url.lower()):
@@ -443,7 +475,7 @@ class EnhancedLinkedInChecker:
                  if any(kw in page_title for kw in ["premium", "gift", "trial"]): confidence = "HIGH"
 
             if (is_gift_redeem_url or has_gift_redeem_param or found_trial_keyword) and \
-               any(qual_url_kw in current_url.lower() for qual_url_kw in ["premium", "gift", "redeem", "checkout", "sales/ ενεργοποίηση-δώρου"]):
+               any(qual_url_kw in current_url.lower() for qual_url_kw in ["premium", "gift", "redeem", "checkout", "sales/ ενεργοποίηση-δώρου"]): # Greek example included
                 action_button_keywords = ["activate", "claim", "start free trial", "redeem now", "accept gift", "try now", "get started"]
                 action_button_found = False
                 try:
@@ -452,14 +484,12 @@ class EnhancedLinkedInChecker:
                         btn_text = (btn.text or btn.get_attribute('value') or btn.get_attribute("aria-label") or "").lower()
                         if any(act_kw in btn_text for act_kw in action_button_keywords):
                             action_button_found = True; details_for_working += f" Action button: '{btn_text[:30]}'."; logger.info(f"Found action button: '{btn_text[:30]}'"); break
-                except Exception: pass
+                except Exception: pass # Ignore if buttons can't be found
                 if action_button_found and confidence != "HIGH": confidence = "MEDIUM"
-                if any(kw in page_source_lower for kw in offer_unavailable_keywords): # Final check for mixed signals
-                    logger.warning(f"Mixed signals for {extracted_url}: Working indicators but also 'unavailable' keywords. Marking FAILED.")
-                    return LinkResult(**result_args, status="FAILED", result_details="Mixed signals: Offer indicators present but also 'unavailable' text.")
+                # At this point, we've already checked for unavailable_keywords. If we reach here, it's likely working.
 
                 logger.info(f"Potential WORKING trial/gift found for: {extracted_url} (Confidence: {confidence})")
-                self.consecutive_error_count = 0
+                self.consecutive_error_count = 0 # Reset error count for successful-like processing
                 return LinkResult(**result_args, status="WORKING", result_details=details_for_working, confidence=confidence)
 
             non_trial_url_patterns = ["/feed/", "/my-items/", "/jobs/", "/company/", "/in/", "/notifications/", "/messaging/"]
@@ -478,6 +508,7 @@ class EnhancedLinkedInChecker:
             logger.warning(f"No clear trial/gift or unavailable message for {extracted_url}. Marking FAILED (inconclusive).")
             self.consecutive_error_count = 0
             return LinkResult(**result_args, status="FAILED", result_details="Inconclusive: No specific trial/gift offer or unavailable message detected.")
+
         except TimeoutException:
             logger.error(f"Timeout loading link: {extracted_url}"); self.consecutive_error_count += 1
             return LinkResult(**result_args, status="ERROR", result_details="Timeout loading page.")
@@ -491,31 +522,30 @@ class EnhancedLinkedInChecker:
             return LinkResult(**result_args, status="ERROR", result_details=f"Unexpected error: {e}")
 
     def run(self):
-        # Improved: Incorporates account switching logic before processing each link.
         self.running = True; self.should_stop = False
         self.rate_limit_cooldown_until = None; self.consecutive_error_count = 0
         self.links_checked_on_current_account = 0; self.current_account_index = 0
 
         logger.info("Starting LinkedIn checking process...")
-        if not self.accounts: # Ensure primary creds were set and added
+        if not self.accounts:
             if self._primary_email and self._primary_password:
                  self.accounts.insert(0, {'email': self._primary_email, 'password': self._primary_password})
             else:
                 logger.error("No accounts configured. Aborting."); self.running = False
-                if self.gui: self.gui.show_error_async_main_thread("No primary LinkedIn credentials. Cannot start."); self.gui.process_completed_main_thread()
+                if self.gui: self.gui.show_error_async("No primary LinkedIn credentials. Cannot start."); self.gui.process_completed()
                 return
 
         links_data = self.read_links()
         if not links_data:
             logger.warning("No valid URLs to process."); self.running = False
-            if self.gui: self.gui.process_completed_main_thread()
+            if self.gui: self.gui.process_completed()
             return
 
         if not self._setup_driver() or not self._login_linkedin():
             logger.error("Initial WebDriver setup or login failed. Aborting."); self.running = False
             current_email, _ = self._get_current_creds()
             msg = f"Initial login/setup failed for {current_email or 'primary account'}. Check logs."
-            if self.gui: self.gui.show_error_async_main_thread(msg); self.gui.process_completed_main_thread()
+            if self.gui: self.gui.show_error_async(msg); self.gui.process_completed()
             self._quit_driver(); return
 
         self.stats = {'total_processed': 0, 'working_found': 0, 'failed_or_invalid': 0, 'rate_limit_suspected': 0}
@@ -524,58 +554,70 @@ class EnhancedLinkedInChecker:
         for extracted_url, original_line_num, original_line_content in links_data:
             if self.should_stop: logger.info("🛑 Process stopped by user request."); break
 
-            if self.rate_limit_cooldown_until and datetime.now() > self.rate_limit_cooldown_until and self.account_switch_threshold > 0 and self.links_checked_on_current_account >= self.account_switch_threshold and len(self.accounts) > 1:
+            if self.rate_limit_cooldown_until and datetime.now() < self.rate_limit_cooldown_until:
+                remaining_s = (self.rate_limit_cooldown_until - datetime.now()).total_seconds()
+                logger.info(f"Cooldown active. Pausing for {remaining_s:.0f}s...")
+                if self.gui: self.gui.update_status_for_cooldown(True, remaining_s)
+                time.sleep(remaining_s)
+                if self.gui: self.gui.update_status_for_cooldown(False, 0)
+                self.rate_limit_cooldown_until = None; self.consecutive_error_count = 0
+
+            if self.account_switch_threshold > 0 and \
+               self.links_checked_on_current_account >= self.account_switch_threshold and \
+               len(self.accounts) > 1:
                 logger.info(f"Account switch threshold ({self.account_switch_threshold}) reached. Switching...")
                 if not self._switch_to_next_account():
                     logger.warning("Account switch failed. Continuing with current, or links might fail if login was bad.")
                     if self.gui: self.gui.show_info_async("Account switch failed. Check logs. Processing continues with potential issues.")
-                    # If switch fails and driver is None, next block handles it
 
-            if not self.driver: # Driver might be None if it crashed or a switch failed badly
+            if not self.driver:
                 logger.error("WebDriver unavailable. Attempting re-setup and login.")
                 if self._setup_driver() and self._login_linkedin(): logger.info("WebDriver re-initialized.")
                 else:
                     logger.error("Failed to re-initialize WebDriver. Subsequent links for this account will likely fail.")
-                    # This is bad. Could try another switch if possible or just let errors accumulate
                     if len(self.accounts) > 1:
                         logger.info("Attempting another account switch due to critical driver failure.")
                         if not self._switch_to_next_account():
                              logger.critical("Cannot recover WebDriver or switch account. Stopping processing.")
-                             self.should_stop = True # Force stop
-                             if self.gui: self.gui.show_error_async_main_thread("Critical WebDriver failure, cannot continue.")
-                             break # Exit loop
-                    else: # Only one account, and it failed to re-init
+                             self.should_stop = True
+                             if self.gui: self.gui.show_error_async("Critical WebDriver failure, cannot continue.")
+                             break
+                    else:
                         logger.critical("Single account WebDriver re-initialization failed. Stopping.")
                         self.should_stop = True
-                        if self.gui: self.gui.show_error_async_main_thread("WebDriver re-initialization failed for the only account.")
+                        if self.gui: self.gui.show_error_async("WebDriver re-initialization failed for the only account.")
                         break
-
 
             result = self.process_single_link(extracted_url, original_line_num, original_line_content)
             self.links_checked_on_current_account += 1
-
             self.stats['total_processed'] += 1
+
             if result.status == "WORKING": self.stats['working_found'] += 1; self.working_links.append(result)
             elif result.status == "RATE_LIMIT_SUSPECTED": self.stats['rate_limit_suspected'] +=1; self.failed_links.append(result)
             elif result.status != "CANCELLED": self.stats['failed_or_invalid'] += 1; self.failed_links.append(result)
 
             if self.gui:
-                current_email_disp = self.accounts[self.current_account_index]['email'] if self.accounts else 'N/A'
+                current_email_disp = self.accounts[self.current_account_index]['email'] if self.accounts and 0 <= self.current_account_index < len(self.accounts) else "N/A"
+                self.gui.update_progress(
+                    self.stats['total_processed'], self.stats['working_found'],
+                    self.stats['failed_or_invalid'] + self.stats['rate_limit_suspected'],
+                    current_email_disp, self.links_checked_on_current_account, len(self.accounts)
+                )
+            logger.info(f"Result L{original_line_num}: {result.status} - {result.link}")
+
             if self.consecutive_error_count >= self.MAX_CONSECUTIVE_ERRORS_BEFORE_COOLDOWN:
                 logger.warning(f"Max consecutive errors ({self.consecutive_error_count}) reached. Cooldown for {RATE_LIMIT_COOLDOWN_MINUTES} min.")
                 self.rate_limit_cooldown_until = datetime.now() + timedelta(minutes=RATE_LIMIT_COOLDOWN_MINUTES)
                 self.consecutive_error_count = 0
                 if self.gui:
-                    self.gui.update_status_for_cooldown_main_thread(True, RATE_LIMIT_COOLDOWN_MINUTES * 60)
+                    self.gui.update_status_for_cooldown(True, RATE_LIMIT_COOLDOWN_MINUTES * 60)
                 if len(self.accounts) > 1 and self.account_switch_threshold > 0:
                     logger.info("Attempting account switch due to repeated errors.")
                     if not self._switch_to_next_account():
                         logger.warning("Account switch after repeated errors failed. Cooldown active.")
-
-
         self._save_results(); self._quit_driver()
         self.running = False; logger.info("LinkedIn checking process finished.")
-        if self.gui: self.gui.process_completed_main_thread(self.get_output_file_paths())
+        if self.gui: self.gui.process_completed(self.get_output_file_paths())
 
     def get_output_file_paths(self) -> Dict[str, Optional[str]]:
         base_filename = f"linkedin_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -589,19 +631,19 @@ class EnhancedLinkedInChecker:
     def _save_results(self):
         if not self.output_dir.exists(): self.output_dir.mkdir(parents=True, exist_ok=True); logger.info(f"Created output dir: {self.output_dir}")
         paths = self.get_output_file_paths(); all_res = self.working_links + self.failed_links
-        if self.working_links and paths['working_file']:
+        if self.working_links and paths.get('working_file'):
             try:
                 with open(paths['working_file'], 'w', encoding='utf-8') as f:
                     for r in self.working_links: f.write(f"L{r.line_num} | {r.status} | Conf: {r.confidence} | URL: {r.final_url or r.link} | Details: {r.result_details}\n")
                 logger.info(f"Saved {len(self.working_links)} working links to {paths['working_file']}")
             except Exception as e: logger.error(f"Error saving working links: {e}", exc_info=True)
-        if self.working_links and paths['quick_file']:
+        if self.working_links and paths.get('quick_file'):
             try:
                 with open(paths['quick_file'], 'w', encoding='utf-8') as f:
                     for r in self.working_links: f.write(f"{r.final_url or r.link}\n")
                 logger.info(f"Saved quick copy file to {paths['quick_file']}")
             except Exception as e: logger.error(f"Error saving quick copy file: {e}", exc_info=True)
-        if paths['json_file']:
+        if paths.get('json_file'):
             try:
                 serializable = [asdict(r) for r in all_res if isinstance(r, LinkResult)]
                 with open(paths['json_file'], 'w', encoding='utf-8') as f: json.dump(serializable, f, indent=2)
@@ -616,50 +658,8 @@ class EnhancedLinkedInChecker:
             finally: self.driver = None; logger.info("WebDriver quit successfully.")
 
     def stop_processing(self):
-        logger.info("Received stop signal. Attempting to gracefully stop...")
+        logger.info("Received stop signal for checker. Attempting to gracefully stop...")
         self.should_stop = True
-
-    def start_processing(self):
-        if self.process_thread and self.process_thread.is_alive():
-            self.log_to_gui("A checking process is already running.", level="WARNING")
-            return
-        self.stop_button.configure(state="normal")
-        self.start_button.configure(state="disabled")
-        self.should_stop = False
-        def run_checker():
-            try:
-                input_file = self.input_file_var.get()
-                output_dir = self.output_dir_var.get()
-                email = self.email_var.get()
-                password = self.password_var.get()
-                headless = self.headless_var.get()
-                min_delay = self.min_delay_var.get()
-                max_delay = self.max_delay_var.get()
-                browser = self.browser_var.get()
-                max_retries = self.max_retries_var.get()
-                account_switch_threshold = self.account_switch_threshold_var.get()
-                self.checker = EnhancedLinkedInChecker(
-                    input_file=input_file,
-                    output_dir=output_dir,
-                    delay_min=min_delay,
-                    delay_max=max_delay,
-                    headless=headless,
-                    max_retries=max_retries,
-                    account_switch_threshold=account_switch_threshold,
-                    gui_instance=self,
-                    browser_type=browser
-                )
-                self.checker.set_credentials(email, password)
-                self.checker.read_links()
-                self.checker.running = True
-                self.checker.process_links()
-            except Exception as e:
-                self.log_to_gui(f"Error during processing: {e}", level="ERROR")
-            finally:
-                self.start_button.configure(state="normal")
-                self.stop_button.configure(state="disabled")
-        self.process_thread = threading.Thread(target=run_checker, daemon=True)
-        self.process_thread.start()
 
 # --- GUI Class ---
 class LinkedInCheckerGUI(ctk.CTk):
@@ -667,13 +667,13 @@ class LinkedInCheckerGUI(ctk.CTk):
         super().__init__()
         self.app_logger = app_logger
         self.title("LinkedIn Trial Checker")
-        self.geometry("1000x750") # Increased size for Accounts tab
+        self.geometry("1000x750")
         self.minsize(950, 700)
         ctk.set_appearance_mode("System")
         ctk.set_default_color_theme("blue")
 
         self.log_queue = queue.Queue()
-        self.gui_logger = setup_logging(log_queue=self.log_queue)
+        self.gui_logger = setup_logging(log_level=logging.INFO, log_queue=self.log_queue)
 
         self.checker: Optional[EnhancedLinkedInChecker] = None
         self.process_thread: Optional[threading.Thread] = None
@@ -682,15 +682,14 @@ class LinkedInCheckerGUI(ctk.CTk):
 
         self.input_file_var = tk.StringVar(value=DEFAULT_INPUT_FILE)
         self.output_dir_var = tk.StringVar(value=DEFAULT_OUTPUT_DIR)
-        self.email_var = tk.StringVar() # Primary email
-        self.password_var = tk.StringVar() # Primary password
+        self.email_var = tk.StringVar()
+        self.password_var = tk.StringVar()
         self.headless_var = tk.BooleanVar(value=False)
         self.min_delay_var = tk.DoubleVar(value=3.0)
         self.max_delay_var = tk.DoubleVar(value=5.5)
         self.browser_var = tk.StringVar(value="Chrome")
         self.max_retries_var = tk.IntVar(value=2)
 
-        # Account Tab Variables - New
         self.additional_account_email_var = tk.StringVar()
         self.additional_account_password_var = tk.StringVar()
         self.account_switch_threshold_var = tk.IntVar(value=DEFAULT_ACCOUNT_SWITCH_THRESHOLD)
@@ -703,27 +702,30 @@ class LinkedInCheckerGUI(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def set_progress_max_value(self, max_value: int):
+        if threading.current_thread() is not threading.main_thread():
+            self.after(0, self.set_progress_max_value, max_value)
+            return
         self.total_links_for_progress = max_value
         logger.debug(f"GUI Progress Max Value Set To: {max_value}")
-        if max_value > 0 :
-            self.progress_bar.set(0)
-            self.progress_label.configure(text=f"Progress: 0% (0/{max_value})")
-        else:
-            self.progress_bar.set(0)
-            self.progress_label.configure(text="Progress: No links loaded")
+        if hasattr(self, 'progress_bar'): # Check if progress_bar is initialized
+            if max_value > 0 :
+                self.progress_bar.set(0)
+                self.progress_label.configure(text=f"Progress: 0% (0/{max_value})")
+            else:
+                self.progress_bar.set(0)
+                self.progress_label.configure(text="Progress: No links loaded")
 
     def create_tabs(self):
         self.tab_view = ctk.CTkTabview(self.main_frame)
         self.tab_view.pack(fill="both", expand=True, pady=(0,5))
-        tabs = ["Setup", "Accounts", "Configuration", "Logs", "Results"] # New: Accounts tab
+        tabs = ["Setup", "Accounts", "Configuration", "Logs", "Results"]
         for tab_name in tabs: self.tab_view.add(tab_name)
         self.create_setup_tab(self.tab_view.tab("Setup"))
-        self.create_accounts_tab(self.tab_view.tab("Accounts")) # New: Create accounts tab
+        self.create_accounts_tab(self.tab_view.tab("Accounts"))
         self.create_config_tab(self.tab_view.tab("Configuration"))
         self.create_log_tab(self.tab_view.tab("Logs"))
         self.create_results_tab(self.tab_view.tab("Results"))
         self.tab_view.set("Setup")
-
 
     def create_setup_tab(self, tab: ctk.CTkFrame):
         header_frame = ctk.CTkFrame(tab, fg_color="transparent")
@@ -746,17 +748,16 @@ class LinkedInCheckerGUI(ctk.CTk):
         ctk.CTkLabel(cred_frame, text="Email:").pack(anchor="w", padx=10)
         ctk.CTkEntry(cred_frame, textvariable=self.email_var).pack(fill="x", padx=10, pady=(0, 5))
         ctk.CTkLabel(cred_frame, text="Password:").pack(anchor="w", padx=10)
-        ctk.CTkEntry(cred_frame, show="•", textvariable=self.password_var).pack(fill="x", padx=10, pady=(0, 5)) # Fixed: Using actual bullet
+        ctk.CTkEntry(cred_frame, show="•", textvariable=self.password_var).pack(fill="x", padx=10, pady=(0, 5))
         ctk.CTkLabel(cred_frame, text="Primary email is saved in config, password is not.", font=ctk.CTkFont(size=10), text_color="gray").pack(pady=(0, 5))
 
         button_frame = ctk.CTkFrame(tab, fg_color="transparent"); button_frame.pack(fill="x", pady=20, padx=10)
         self.start_button = ctk.CTkButton(button_frame, text="Start Checking", font=ctk.CTkFont(size=16, weight="bold"), height=40, command=self.start_processing)
         self.start_button.pack(side="left", expand=True, padx=5)
-        self.stop_button = ctk.CTkButton(button_frame, text="Stop", font=ctk.CTkFont(size=16, weight="bold"), height=40, fg_color="darkred", hover_color="#C00000", command=self.stop_processing, state="disabled")
+        self.stop_button = ctk.CTkButton(button_frame, text="Stop", font=ctk.CTkFont(size=16, weight="bold"), height=40, fg_color="darkred", hover_color="#C00000", command=self.stop_gui_processing, state="disabled")
         self.stop_button.pack(side="left", expand=True, padx=5)
 
     def create_accounts_tab(self, tab: ctk.CTkFrame):
-        # New: GUI for managing multiple accounts and switch threshold.
         tab.grid_columnconfigure(0, weight=1); tab.grid_columnconfigure(1, weight=1)
 
         add_account_frame = ctk.CTkFrame(tab); add_account_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
@@ -774,7 +775,7 @@ class LinkedInCheckerGUI(ctk.CTk):
         ctk.CTkLabel(list_frame, text="Session Account List", font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=0, pady=(10,5), padx=10)
         self.accounts_list_textbox = ctk.CTkTextbox(list_frame, height=150, wrap="none", font=("Consolas", 11))
         self.accounts_list_textbox.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0,5))
-        self.accounts_list_textbox.insert("end", "Primary account (Setup tab) is used first.\nAdditional accounts appear here.\n")
+        # self.accounts_list_textbox.insert("end", "Primary account (Setup tab) is used first.\nAdditional accounts appear here.\n") # Will be populated by update_gui_accounts_list_display
         self.accounts_list_textbox.configure(state="disabled")
         ctk.CTkButton(list_frame, text="Clear Additional Accounts", command=self.clear_gui_additional_accounts).grid(row=2, column=0, pady=5, padx=10)
 
@@ -783,20 +784,19 @@ class LinkedInCheckerGUI(ctk.CTk):
         ctk.CTkLabel(switch_config_frame, text="Account Switching Settings", font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=0, columnspan=2, pady=(10,15), padx=10)
         ctk.CTkLabel(switch_config_frame, text="Switch account after checking:").grid(row=1, column=0, sticky="w", padx=10, pady=5)
         ctk.CTkEntry(switch_config_frame, textvariable=self.account_switch_threshold_var, width=80).grid(row=1, column=1, sticky="w", padx=10, pady=5)
-        ctk.CTkLabel(switch_config_frame, text="links. (0 to disable switching).").grid(row=1, column=1, sticky="w", padx=(95,10), pady=5) # Adjusted text
-        ctk.CTkButton(switch_config_frame, text="Save Threshold (Config Tab for All)", command=self.save_config).grid(row=2, column=0, columnspan=2, pady=15, padx=10) # Clarified button
+        ctk.CTkLabel(switch_config_frame, text="links. (0 to disable switching).").grid(row=1, column=1, sticky="w", padx=(95,10), pady=5)
+        ctk.CTkButton(switch_config_frame, text="Save Threshold (Config Tab for All)", command=self.save_config).grid(row=2, column=0, columnspan=2, pady=15, padx=10)
         self.current_processing_account_label = ctk.CTkLabel(switch_config_frame, text="Current Account: N/A | Links on this account: 0 | Total Accounts: 0", font=ctk.CTkFont(size=12))
         self.current_processing_account_label.grid(row=3, column=0, columnspan=2, pady=(10,5), padx=10)
-        self.update_gui_accounts_list_display() # Initialize display
+        self.update_gui_accounts_list_display()
 
     def add_gui_account(self):
-        # New: Adds an account to the GUI's session list.
         email = self.additional_account_email_var.get().strip()
         password = self.additional_account_password_var.get()
         if not email or not password: self.show_error("Email and Password required for additional accounts."); return
         if any(acc['email'] == email for acc in self.gui_additional_accounts):
             self.show_info(f"Account {email} is already in the additional list."); return
-        if email == self.email_var.get().strip():
+        if email == self.email_var.get().strip(): # Check against primary email
             self.show_info(f"Account {email} is the primary. Add a different one."); return
         self.gui_additional_accounts.append({'email': email, 'password': password})
         self.additional_account_email_var.set(""); self.additional_account_password_var.set("")
@@ -804,33 +804,33 @@ class LinkedInCheckerGUI(ctk.CTk):
         self.log_to_gui(f"Added additional account {email} to session list.", "INFO")
 
     def clear_gui_additional_accounts(self):
-        # New: Clears session-specific additional accounts.
         self.gui_additional_accounts.clear()
         self.update_gui_accounts_list_display()
         self.log_to_gui("Cleared additional accounts from session list.", "INFO")
 
     def update_gui_accounts_list_display(self):
-        # New: Updates the textbox showing configured accounts.
-        if not hasattr(self, 'accounts_list_textbox'): return # Not initialized yet
+        if not hasattr(self, 'accounts_list_textbox'): return
         self.accounts_list_textbox.configure(state="normal"); self.accounts_list_textbox.delete("1.0", tk.END)
         primary_email = self.email_var.get().strip()
-        total_accounts_in_gui = 0
+        current_total_accounts = 0
         if primary_email:
             self.accounts_list_textbox.insert("end", f"1. {primary_email} (Primary)\n")
-            total_accounts_in_gui += 1
+            current_total_accounts += 1
         else: self.accounts_list_textbox.insert("end", "Primary account (Setup tab) not set.\n")
+
         for i, acc in enumerate(self.gui_additional_accounts):
-            self.accounts_list_textbox.insert("end", f"{i + total_accounts_in_gui + (1 if not primary_email and not total_accounts_in_gui else 0)}. {acc['email']} (Additional)\n") # Ensure numbering is correct
+            self.accounts_list_textbox.insert("end", f"{i + 1 + current_total_accounts}. {acc['email']} (Additional)\n")
+
         if not self.gui_additional_accounts and not primary_email:
              self.accounts_list_textbox.insert("end", "\nNo accounts configured for this session.\n")
         elif not self.gui_additional_accounts and primary_email:
              self.accounts_list_textbox.insert("end", "\nNo additional accounts added for this session.\n")
         self.accounts_list_textbox.configure(state="disabled")
-        self.update_account_display_info_label("N/A", 0, total_accounts_in_gui + len(self.gui_additional_accounts))
+        # Update total accounts in the label
+        self.update_account_display_info_label("N/A", 0, current_total_accounts + len(self.gui_additional_accounts))
 
 
     def update_account_display_info_label(self, current_email: str, links_on_account: int, total_accounts: int):
-        # New: Updates the label in Accounts tab footer showing current processing account.
         if hasattr(self, 'current_processing_account_label'):
             self.current_processing_account_label.configure(
                 text=f"Current Account: {current_email} | Links this acc: {links_on_account} | Total Accounts: {total_accounts}"
@@ -852,11 +852,10 @@ class LinkedInCheckerGUI(ctk.CTk):
                            "• Headless Mode: Runs browser invisibly.\n"
                            "• Request Delay: Random delay between links.\n"
                            "• Max Retries: For failed links (basic implementation).\n"
-                           "• Account Switch Threshold: In 'Accounts' tab. Saved with 'Save All Settings'.") # Fixed bullet, updated info
+                           "• Account Switch Threshold: In 'Accounts' tab. Saved with 'Save All Settings'.")
         help_textbox = ctk.CTkTextbox(settings_frame, height=120, wrap="word", border_width=1); help_textbox.grid(row=6, column=0, columnspan=2, sticky="ew", pady=10, padx=5)
         help_textbox.insert("1.0", help_text_content.strip()); help_textbox.configure(state="disabled")
         settings_frame.columnconfigure(1, weight=1)
-
 
     def create_log_tab(self, tab: ctk.CTkFrame):
         log_frame = ctk.CTkFrame(tab, fg_color="transparent"); log_frame.pack(fill="both", expand=True, padx=5, pady=5)
@@ -911,75 +910,313 @@ class LinkedInCheckerGUI(ctk.CTk):
         if dn: self.output_dir_var.set(dn)
 
     def log_to_gui(self, message: str, level: str = "INFO"):
-        # Ensure this runs on the main thread if called from another thread.
-        if threading.current_thread() is not threading.main_thread():
-            self.after(0, self.log_to_gui, message, level)
-            return
-        formatted_message = f"{datetime.now().strftime('%H:%M:%S')} | {level.upper()}: {message}"
-        self.log_textbox.configure(state="normal")
-        self.log_textbox.insert(tk.END, formatted_message + "\n")
-        self.log_textbox.configure(state="disabled")
-        self.log_textbox.see(tk.END)
+        # This is called from GUI thread by check_log_queue or directly by GUI methods.
+        if level: # If level is provided (e.g. by direct GUI calls)
+            formatted_message = f"{datetime.now().strftime('%H:%M:%S')} | {level.upper()}: {message}"
+        else: # If from queue, message is already formatted by logger
+            formatted_message = message
 
-    def update_progress(self, total_processed, working_found, failed_or_invalid, current_email, links_on_acc, total_accs):
-        if self.total_links_for_progress:
+        if hasattr(self, 'log_view_ctk') and self.log_view_ctk.winfo_exists():
+            self.log_view_ctk.configure(state="normal")
+            self.log_view_ctk.insert(tk.END, formatted_message + "\n")
+            self.log_view_ctk.configure(state="disabled")
+            self.log_view_ctk.see(tk.END)
+        else: # Fallback print if GUI log element isn't ready
+            print(formatted_message)
+
+    def check_log_queue(self): # Polls queue and updates GUI log view
+        try:
+            while True:
+                record_str = self.log_queue.get_nowait() # record_str is already formatted by QueueHandler
+                self.log_to_gui(record_str, level="") # Pass empty level, as it's already formatted
+                self.log_queue.task_done()
+        except queue.Empty:
+            pass
+        finally:
+            self.after(100, self.check_log_queue) # Check queue every 100ms
+
+    def clear_logs(self):
+        if hasattr(self, 'log_view_ctk') and self.log_view_ctk.winfo_exists():
+            self.log_view_ctk.configure(state="normal"); self.log_view_ctk.delete(1.0, tk.END); self.log_view_ctk.configure(state="disabled")
+        self.log_to_gui("Log display cleared.", "INFO")
+
+    def save_logs_to_file(self):
+        content = ""
+        if hasattr(self, 'log_view_ctk') and self.log_view_ctk.winfo_exists():
+             content = self.log_view_ctk.get(1.0, tk.END)
+        if not content.strip(): self.show_info("Log is empty."); return
+        fn = filedialog.asksaveasfilename(title="Save Log File", defaultextension=".log", filetypes=[("Log files", "*.log"), ("Text files", "*.txt")], initialdir=str(LOG_DIR))
+        if fn:
+            try:
+                with open(fn, 'w', encoding='utf-8') as f: f.write(content)
+                self.log_to_gui(f"GUI logs saved to {fn}", "INFO"); self.show_info(f"GUI logs saved to:\n{fn}")
+            except Exception as e: self.log_to_gui(f"Error saving GUI logs: {e}", "ERROR"); self.show_error(f"Failed to save GUI logs: {e}")
+
+    def show_error(self, message: str): # For GUI-thread errors
+        self.log_to_gui(message, "ERROR");
+        logger.error(f"GUI Error: {message}")
+        if self.winfo_exists(): messagebox.showerror("Error", message, parent=self)
+
+    def show_error_async(self, message: str): # For calls from worker thread
+        self.after(0, self.show_error, message) # Schedule show_error to run in GUI thread
+
+    def show_info(self, message: str): # For GUI-thread info
+        self.log_to_gui(message, "INFO");
+        logger.info(f"GUI Info: {message}")
+        if self.winfo_exists(): messagebox.showinfo("Information", message, parent=self)
+
+    def show_info_async(self, message: str): # For calls from worker thread
+        self.after(0, self.show_info, message)
+
+    def show_security_challenge_dialog_modal(self, driver): # driver arg is for checker's context if needed later
+        event = threading.Event()
+        # Schedule the dialog creation to run in the GUI thread
+        self.after(0, self._create_and_show_modal_challenge_dialog, event)
+        logger.info("Waiting for security challenge dialog to be resolved by user...")
+        event.wait() # Block the calling (checker) thread until event is set
+        logger.info("Security challenge dialog closed. Resuming checker.")
+        # After dialog closes, the checker thread will resume, and _login_linkedin can re-check driver.current_url
+        WebDriverWait(driver, 300).until_not(EC.url_contains("checkpoint/challenge"))
+        WebDriverWait(driver, 15).until_not(EC.url_contains("login_verify"))
+
+
+    def _create_and_show_modal_challenge_dialog(self, event_to_set: threading.Event):
+        # This method MUST run in the GUI thread (scheduled by self.after)
+        top = ctk.CTkToplevel(self); top.attributes("-topmost", True); top.title("Security Challenge"); top.geometry("450x200"); top.transient(self); top.grab_set()
+        ctk.CTkLabel(top, text="LinkedIn Security Challenge Detected!", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(20,10))
+        ctk.CTkLabel(top, text="Please complete the challenge in the browser window.\nThe process will pause.", justify="center").pack(pady=5)
+        def on_dialog_close():
+            top.destroy()
+            event_to_set.set() # Signal the waiting (checker) thread that dialog is closed
+        ctk.CTkButton(top, text="Continue (after solving)", command=on_dialog_close).pack(pady=20)
+        top.protocol("WM_DELETE_WINDOW", on_dialog_close) # Also handle if user closes window via 'X'
+
+    def open_results_folder(self):
+        output_dir_str = self.output_dir_var.get()
+        if not Path(output_dir_str).is_dir(): self.show_error(f"Output directory '{output_dir_str}' not found."); return
+        try:
+            if sys.platform == 'win32': os.startfile(output_dir_str)
+            elif sys.platform == 'darwin': subprocess.run(['open', output_dir_str], check=True)
+            else: subprocess.run(['xdg-open', output_dir_str], check=True)
+            self.log_to_gui(f"Opened results folder: {output_dir_str}", "INFO")
+        except Exception as e: self.show_error(f"Failed to open results folder: {e}")
+
+    def export_results_summary(self):
+        if not self.result_paths or not any(self.result_paths.values()): self.show_info("No results saved this session."); return
+        message = "Session result files:\n\n"; found_files = False
+        for key, path_str in self.result_paths.items():
+            if path_str and Path(path_str).exists(): message += f"- {key.replace('_',' ').title()}: {Path(path_str).name}\n"; found_files = True
+            elif path_str : message += f"- {key.replace('_',' ').title()}: (Not found: {Path(path_str).name})\n"
+        if not found_files: self.show_info("No result files found."); return
+        folder = Path(self.output_dir_var.get())
+        for pv in self.result_paths.values():
+            if pv: folder = Path(pv).parent; break
+        message += f"\nLocated in: {folder}\n\nOpen this folder?"
+        if self.winfo_exists() and messagebox.askyesno("Saved Result Files", message, parent=self) and folder.is_dir():
+             self.open_results_folder_explicit(str(folder))
+        elif not folder.is_dir(): self.show_error(f"Target folder '{folder}' not found.")
+
+    def open_results_folder_explicit(self, folder_path: str):
+        try:
+            if sys.platform == 'win32': os.startfile(folder_path)
+            elif sys.platform == 'darwin': subprocess.run(['open', folder_path], check=True)
+            else: subprocess.run(['xdg-open', folder_path], check=True)
+            self.log_to_gui(f"Opened folder: {folder_path}", "INFO")
+        except Exception as e: self.show_error(f"Failed to open folder '{folder_path}': {e}")
+
+    def start_processing(self):
+        if self.process_thread and self.process_thread.is_alive():
+            self.show_info("A checking process is already running.")
+            return
+        self.stop_button.configure(state="normal")
+        self.start_button.configure(state="disabled")
+        self.log_to_gui("Starting processing...", "INFO")
+
+        try:
+            input_file = self.input_file_var.get().strip()
+            output_dir = self.output_dir_var.get().strip()
+            primary_email = self.email_var.get().strip()
+            primary_password = self.password_var.get()
+            if not input_file or not Path(input_file).is_file(): self.show_error(f"Input file invalid:\n{input_file}"); self._reset_buttons(); return
+            if not output_dir: self.show_error("Output directory needed."); self._reset_buttons(); return
+            try: Path(output_dir).mkdir(parents=True, exist_ok=True)
+            except Exception as e: self.show_error(f"Cannot create/access output dir '{output_dir}':\n{e}"); self._reset_buttons(); return
+            if not primary_email or not primary_password:
+                self.show_error("Primary LinkedIn email and password (in Setup tab) are required."); self._reset_buttons(); return
+
+            self.checker = EnhancedLinkedInChecker(
+                input_file=input_file, output_dir=output_dir,
+                delay_min=self.min_delay_var.get(), delay_max=self.max_delay_var.get(),
+                headless=self.headless_var.get(), max_retries=self.max_retries_var.get(),
+                account_switch_threshold=self.account_switch_threshold_var.get(),
+                gui_instance=self, browser_type=self.browser_var.get()
+            )
+            if not self.checker.set_credentials(primary_email, primary_password):
+                self.show_error("Failed to set primary credentials. Check logs."); self._reset_buttons(); return
+            for acc_data in self.gui_additional_accounts:
+                self.checker.add_additional_account(acc_data['email'], acc_data['password'])
+
+            total_c_accs = len(self.checker.accounts) if self.checker else 0
+            self.update_account_display_info_label(primary_email if total_c_accs > 0 else "N/A", 0, total_c_accs)
+            self.clear_previous_results_display()
+
+        except Exception as e:
+            self.show_error(f"Error initializing checker: {e}")
+            logger.error(f"Checker init failed: {e}", exc_info=True)
+            self._reset_buttons()
+            return
+
+        self.process_thread = threading.Thread(target=self.checker.run, daemon=True)
+        self.process_thread.start()
+
+    def _reset_buttons(self): # Helper to reset button states
+        self.start_button.configure(state="normal")
+        self.stop_button.configure(state="disabled", text="Stop") # Reset text too
+
+    def clear_previous_results_display(self):
+        if hasattr(self, 'working_list_ctk'):
+            self.working_list_ctk.configure(state="normal"); self.working_list_ctk.delete("1.0", tk.END); self.working_list_ctk.configure(state="disabled")
+        if hasattr(self, 'failed_list_ctk'):
+            self.failed_list_ctk.configure(state="normal"); self.failed_list_ctk.delete("1.0", tk.END); self.failed_list_ctk.configure(state="disabled")
+        if hasattr(self, 'progress_bar'): self.progress_bar.set(0); self.total_links_for_progress = 0 # Reset total links
+        if hasattr(self, 'stats_label'): self.stats_label.configure(text="Processed: 0 | Working: 0 | Failed/Other: 0")
+        if hasattr(self, 'progress_label'): self.progress_label.configure(text="Progress: Not Started") # Reset label
+        self.result_paths = {}
+        if hasattr(self, 'status_info_label'): self.status_info_label.configure(text="")
+
+    def stop_gui_processing(self):
+        if self.checker:
+            self.log_to_gui("Attempting to stop process...", "INFO")
+            self.checker.stop_processing()
+            self.stop_button.configure(text="Stopping...", state="disabled")
+        else:
+            self.log_to_gui("No process running to stop.", "WARNING")
+            self._reset_buttons()
+
+    def update_status_for_cooldown(self, is_cooldown: bool, duration_seconds: float):
+        if threading.current_thread() is not threading.main_thread():
+            self.after(0, self.update_status_for_cooldown, is_cooldown, duration_seconds)
+            return
+        if is_cooldown:
+            self.status_info_label.configure(text=f"Rate Limit Cooldown: Paused for {duration_seconds:.0f}s", text_color="orange")
+        else:
+            self.status_info_label.configure(text="Cooldown finished. Resuming...", text_color="green")
+            self.after(5000, lambda: self.status_info_label.configure(text=""))
+
+    def update_progress(self, total_processed: int, working_found: int, failed_or_invalid: int, current_email: str, links_on_acc: int, total_accs: int):
+        if threading.current_thread() is not threading.main_thread():
+            self.after(0, self.update_progress, total_processed, working_found, failed_or_invalid, current_email, links_on_acc, total_accs)
+            return
+
+        if self.total_links_for_progress > 0:
             prog_val = total_processed / self.total_links_for_progress
             self.progress_bar.set(prog_val)
             percent = int(prog_val * 100)
             self.progress_label.configure(text=f"Progress: {percent}% ({total_processed}/{self.total_links_for_progress})")
             if self.winfo_exists(): self.title(f"Checker - {percent}%")
-        else:
+        else: # Happens if read_links finishes after start_processing sets total_links to 0 initially
             self.progress_label.configure(text=f"Progress: Processing {total_processed}...")
-            if self.winfo_exists(): self.title(f"Checker - Processing...")
-            self.progress_bar.set(0)
+            if self.winfo_exists(): self.title("Checker - Processing...")
+            self.progress_bar.set(0) # Or some indeterminate state if supported
+
         self.stats_label.configure(text=f"Processed: {total_processed} | Working: {working_found} | Failed/Other: {failed_or_invalid}")
         self.update_account_display_info_label(current_email, links_on_acc, total_accs)
         self.update_result_lists_content()
 
     def update_result_lists_content(self):
         if not self.checker: return
-        self.working_list_ctk.configure(state="normal"); self.working_list_ctk.delete("1.0", tk.END)
-        for item in self.checker.working_links:
-            self.working_list_ctk.insert(tk.END, f"L{item.line_num}: {item.url}\n")
-        self.working_list_ctk.configure(state="disabled")
-        # Repeat for failed_list_ctk if needed
-        current_total_accs = len(self.checker.accounts) if self.checker and self.checker.accounts else (1 if self.email_var.get() else 0) + len(self.gui_additional_accounts)
-        self.update_account_display_info_label("N/A", 0, current_total_accs)
+        if hasattr(self, 'working_list_ctk'):
+            self.working_list_ctk.configure(state="normal"); self.working_list_ctk.delete("1.0", tk.END)
+            for item in self.checker.working_links:
+                 self.working_list_ctk.insert(tk.END, f"L{item.line_num:<3} | {item.status:<9} | Conf: {item.confidence or 'N/A':<6} | {item.link} | {item.result_details[:40]}\n")
+            self.working_list_ctk.configure(state="disabled")
+
+        if hasattr(self, 'failed_list_ctk'):
+            self.failed_list_ctk.configure(state="normal"); self.failed_list_ctk.delete("1.0", tk.END)
+            for item in self.checker.failed_links:
+                details = item.result_details or item.error or "No details"
+                self.failed_list_ctk.insert(tk.END, f"L{item.line_num:<3} | {item.status:<20} | {details[:50]:<50} | {item.link}\n")
+            self.failed_list_ctk.configure(state="disabled")
+
+    def process_completed(self, result_paths: Optional[Dict[str, Optional[str]]] = None):
+        if threading.current_thread() is not threading.main_thread():
+            self.after(0, self.process_completed, result_paths)
+            return
+
+        self.log_to_gui("✔ Processing finished or stopped.", "INFO")
+        if result_paths: self.result_paths = result_paths
+        self._reset_buttons()
+        final_msg = "Completed"; status_color = "green"
+        # Check if checker exists and was stopped by user
+        if self.checker and hasattr(self.checker, 'should_stop') and self.checker.should_stop:
+            final_msg = "Stopped by User"; status_color = "orange"
+
+        self.progress_label.configure(text=f"Progress: {final_msg}")
+        self.status_info_label.configure(text=f"Status: {final_msg}", text_color=status_color)
+        if self.winfo_exists(): self.title("LinkedIn Trial Checker - " + final_msg)
+
+        if self.checker:
+            current_email_disp = "N/A"
+            links_on_acc_disp = 0
+            total_accs_disp = len(self.checker.accounts) if hasattr(self.checker, 'accounts') else 0
+            if self.checker.accounts and 0 <= self.checker.current_account_index < len(self.checker.accounts):
+                current_email_disp = self.checker.accounts[self.checker.current_account_index]['email']
+                links_on_acc_disp = self.checker.links_checked_on_current_account
+
+            self.update_progress(
+                self.checker.stats['total_processed'], self.checker.stats['working_found'],
+                self.checker.stats['failed_or_invalid'] + self.checker.stats.get('rate_limit_suspected',0),
+                current_email_disp, links_on_acc_disp, total_accs_disp
+            )
+            summary = (f"Process {final_msg.lower()}.\n\nTotal: {self.checker.stats['total_processed']}\n"
+                       f"Working: {self.checker.stats['working_found']}\nFailed/Other: {self.checker.stats['failed_or_invalid']}\n"
+                       f"Rate Limit Suspected: {self.checker.stats.get('rate_limit_suspected',0)}")
+            if self.checker.stats['working_found'] > 0:
+                if hasattr(self, 'results_tabview'): self.results_tabview.set("Working Trials")
+                summary += "\n\nView saved files summary?"
+                if self.winfo_exists() and messagebox.askyesno(f"Process {final_msg}", summary, parent=self):
+                    if hasattr(self, 'tab_view'): self.tab_view.set("Results"); self.export_results_summary()
+            else: summary += "\nNo working trials found."; self.show_info(summary)
+        else: self.show_info(f"Process {final_msg.lower()}.")
+        
+        current_total_accs_final = len(self.checker.accounts) if self.checker and hasattr(self.checker, 'accounts') else len(self.gui_additional_accounts) + (1 if self.email_var.get() else 0)
+        self.update_account_display_info_label("N/A", 0, current_total_accs_final)
 
 
     def on_closing(self):
-        if self.checker and self.checker.running:
+        if self.checker and hasattr(self.checker, 'running') and self.checker.running:
             if self.winfo_exists() and messagebox.askyesno("Confirm Exit", "Process running. Exit anyway?", parent=self):
-                self.checker.stop_processing()
-                if self.process_thread and self.process_thread.is_alive(): self.process_thread.join(timeout=3.0)
+                if self.checker: self.checker.stop_processing()
+                if self.process_thread and self.process_thread.is_alive():
+                    logger.info("Waiting for checker thread to finish upon closing...")
+                    self.process_thread.join(timeout=5.0)
                 if self.checker and self.checker.driver: self.checker._quit_driver()
                 self.destroy()
             else: return
-        self.save_config()
-        if self.checker and self.checker.driver: self.checker._quit_driver()
-        self.destroy()
+        else:
+            self.save_config() # Save config even if no process was running
+            if self.checker and self.checker.driver: self.checker._quit_driver()
+            self.destroy()
 
     def save_config(self):
-        # Improved: Saves account_switch_threshold and primary_email.
         config = {'input_file': self.input_file_var.get(), 'output_dir': self.output_dir_var.get(),
-                  'primary_email': self.email_var.get(), # Save primary email
+                  'primary_email': self.email_var.get(),
                   'headless': self.headless_var.get(),
                   'min_delay': self.min_delay_var.get(), 'max_delay': self.max_delay_var.get(),
                   'browser': self.browser_var.get(), 'max_retries': self.max_retries_var.get(),
-                  'account_switch_threshold': self.account_switch_threshold_var.get()} # Save threshold
+                  'account_switch_threshold': self.account_switch_threshold_var.get()}
         try:
             with open(CONFIG_FILE, 'w') as f: json.dump(config, f, indent=4)
             self.log_to_gui("Configuration saved.", "INFO")
         except Exception as e: self.log_to_gui(f"Failed to save configuration: {e}", "ERROR")
 
     def load_config(self):
-        # Improved: Loads account_switch_threshold and primary_email.
         try:
             if os.path.exists(CONFIG_FILE):
                 with open(CONFIG_FILE, 'r') as f: config = json.load(f)
                 self.input_file_var.set(config.get('input_file', DEFAULT_INPUT_FILE))
                 self.output_dir_var.set(config.get('output_dir', DEFAULT_OUTPUT_DIR))
-                self.email_var.set(config.get('primary_email', '')) # Load primary email
+                self.email_var.set(config.get('primary_email', ''))
                 self.headless_var.set(config.get('headless', False))
                 self.min_delay_var.set(config.get('min_delay', 3.0))
                 self.max_delay_var.set(config.get('max_delay', 5.5))
@@ -987,25 +1224,26 @@ class LinkedInCheckerGUI(ctk.CTk):
                 self.max_retries_var.set(config.get('max_retries', 2))
                 self.account_switch_threshold_var.set(config.get('account_switch_threshold', DEFAULT_ACCOUNT_SWITCH_THRESHOLD))
                 self.log_to_gui("Configuration loaded.", "INFO")
-                self.update_gui_accounts_list_display() # Reflect loaded primary email
+                self.update_gui_accounts_list_display()
         except FileNotFoundError: self.log_to_gui("No config file. Using defaults.", "INFO")
         except json.JSONDecodeError: self.log_to_gui("Error decoding config. Using defaults.", "ERROR")
         except Exception as e: self.log_to_gui(f"Failed to load config: {e}", "ERROR")
 
-
 # --- Main Application Entry Point ---
 if __name__ == "__main__":
     check_prerequisites()
-    main_logger = setup_logging(log_level=logging.INFO) # DEBUG for more verbosity
-    main_logger.info("Application starting...")
+    main_file_logger = setup_logging(log_level=logging.INFO)
+    main_file_logger.info("Application starting...")
     try:
-        app = LinkedInCheckerGUI(app_logger=main_logger)
+        app = LinkedInCheckerGUI(app_logger=main_file_logger)
         app.mainloop()
     except Exception as e:
-        main_logger.critical(f"Unhandled GUI exception: {e}", exc_info=True)
+        main_file_logger.critical(f"Unhandled top-level GUI exception: {e}", exc_info=True)
         try:
-            root = tk.Tk(); root.withdraw()
-            messagebox.showerror("Fatal Error", f"Critical error: {e}\nCheck logs.")
-            root.destroy()
-        except: print(f"FATAL APP ERROR: {e}") # Absolute fallback
-    main_logger.info("Application finished.")
+            root_fallback = tk.Tk(); root_fallback.withdraw()
+            messagebox.showerror("Fatal Error", f"Critical error: {e}\nCheck logs for details.")
+            root_fallback.destroy()
+        except:
+            print(f"FATAL APPLICATION ERROR: {e}")
+    main_file_logger.info("Application finished.")
+
